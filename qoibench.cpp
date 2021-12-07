@@ -42,6 +42,8 @@ SOFTWARE.
 #define QOI_IMPLEMENTATION
 #include "qoi.h"
 
+#include "spng.h"
+
 
 
 
@@ -143,6 +145,52 @@ void *fload(const char *path, int *out_size) {
 
 	*out_size = size;
 	return buffer;
+}
+
+
+// -----------------------------------------------------------------------------
+// spng wrapper (because fuck trying to build libpng on windows)
+
+// struct spng_ihdr
+// {
+//     uint32_t width;
+//     uint32_t height;
+//     uint8_t bit_depth;
+//     uint8_t color_type;
+//     uint8_t compression_method;
+//     uint8_t filter_method;
+//     uint8_t interlace_method;
+// };
+
+void * spng_decode(void * input, size_t inputSize) {
+	spng_ctx * ctx = spng_ctx_new(0);
+	spng_set_png_buffer(ctx, input, inputSize);
+	spng_set_crc_action(ctx, SPNG_CRC_USE, SPNG_CRC_USE); //ignore CRC for maybe slightly faster decoding?
+	size_t outputSize = 0;
+	spng_decoded_image_size(ctx, SPNG_FMT_RGBA8, &outputSize);
+	void * output = malloc(outputSize);
+	spng_decode_image(ctx, output, outputSize, SPNG_FMT_RGBA8, 0);
+
+	//debug only
+	// spng_ihdr ihdr = {};
+	// spng_get_ihdr(ctx, &ihdr);
+	// printf("ihdr: width %d, height %d, bit_depth %d, color_type %d, compression_method %d, filter_method %d, interlace_method %d\n",
+	// 	(int) ihdr.width, (int) ihdr.height, (int) ihdr.bit_depth, (int) ihdr.color_type, (int) ihdr.compression_method, (int) ihdr.filter_method, (int) ihdr.interlace_method);
+
+	spng_ctx_free(ctx);
+	return output;
+}
+
+void * spng_encode(void * input, size_t width, size_t height, size_t * outputSize) {
+	spng_ctx * ctx = spng_ctx_new(SPNG_CTX_ENCODER);
+	spng_set_option(ctx, SPNG_ENCODE_TO_BUFFER, 1);
+	spng_ihdr ihdr = { (unsigned) width, (unsigned) height, 8, 6, 0, 0, 0 };
+	spng_set_ihdr(ctx, &ihdr);
+	spng_encode_image(ctx, input, width * height * 4, SPNG_FMT_PNG, SPNG_ENCODE_FINALIZE);
+	int error = 0;
+	void * output = spng_get_png_buffer(ctx, outputSize, &error);
+	spng_ctx_free(ctx);
+	return output;
 }
 
 
@@ -284,6 +332,7 @@ typedef struct {
 	uint64_t px;
 	int w;
 	int h;
+	benchmark_lib_result_t spng;
 	benchmark_lib_result_t stbi;
 	benchmark_lib_result_t qoi;
 } benchmark_result_t;
@@ -335,6 +384,11 @@ benchmark_result_t benchmark_image(const char *path, int runs) {
 
 	// Decoding
 
+	BENCHMARK_FN(runs, res.spng.decode_time, {
+		void *dec_p = spng_decode(encoded_png, encoded_png_size);
+		free(dec_p);
+	});
+
 	BENCHMARK_FN(runs, res.stbi.decode_time, {
 		int dec_w, dec_h, dec_channels;
 		void *dec_p = stbi_load_from_memory((unsigned char *) encoded_png, encoded_png_size, &dec_w, &dec_h, &dec_channels, 4);
@@ -349,6 +403,13 @@ benchmark_result_t benchmark_image(const char *path, int runs) {
 
 
 	// Encoding
+
+	BENCHMARK_FN(runs, res.spng.encode_time, {
+		size_t enc_size = 0;
+		void *enc_p = spng_encode(pixels, w, h, &enc_size);
+		res.spng.size = enc_size;
+		free(enc_p);
+	});
 
 	BENCHMARK_FN(runs, res.stbi.encode_time, {
 		int enc_size = 0;
@@ -376,26 +437,21 @@ benchmark_result_t benchmark_image(const char *path, int runs) {
 	return res;
 }
 
+void benchmark_print_lib(const char * name, benchmark_lib_result_t res, double px) {
+	printf("%-5s    %8.1f    %8.1f      %8.2f      %8.2f  %8llu\n", name,
+		   (double) res.decode_time / 1000000.0,
+		   (double) res.encode_time / 1000000.0,
+		   res.decode_time > 0 ? px / ((double) res.decode_time / 1000.0) : 0,
+		   res.encode_time > 0 ? px / ((double) res.encode_time / 1000.0) : 0,
+		   res.size / 1024);
+}
+
 void benchmark_print_result(const char *head, benchmark_result_t res) {
-	double px = res.px;
 	printf("## %s size: %dx%d\n", head, res.w, res.h);
 	printf("        decode ms   encode ms   decode mpps   encode mpps   size kb\n");
-	printf(
-		"stbi:    %8.1f    %8.1f      %8.2f      %8.2f  %8llu\n",
-		(double)res.stbi.decode_time/1000000.0,
-		(double)res.stbi.encode_time/1000000.0,
-		(res.stbi.decode_time > 0 ? px / ((double)res.stbi.decode_time/1000.0) : 0),
-		(res.stbi.encode_time > 0 ? px / ((double)res.stbi.encode_time/1000.0) : 0),
-		res.stbi.size/1024
-	);
-	printf(
-		"qoi:     %8.1f    %8.1f      %8.2f      %8.2f  %8llu\n",
-		(double)res.qoi.decode_time/1000000.0,
-		(double)res.qoi.encode_time/1000000.0,
-		(res.qoi.decode_time > 0 ? px / ((double)res.qoi.decode_time/1000.0) : 0),
-		(res.qoi.encode_time > 0 ? px / ((double)res.qoi.encode_time/1000.0) : 0),
-		res.qoi.size/1024
-	);
+	benchmark_print_lib("spng", res.spng, res.px);
+	benchmark_print_lib("stbi", res.stbi, res.px);
+	benchmark_print_lib("qoi", res.qoi, res.px);
 	printf("\n");
 	fflush(stdout);
 }
@@ -419,7 +475,7 @@ int main(int argc, char **argv) {
 	printf("## Benchmarking %s/*.png -- %d runs\n\n", argv[2], runs); fflush(stdout);
 	int count = 0;
 	for (DirEnt & file : files) {
-		if (strlen(file.name) < 4 || strcmp(file.name + strlen(file.name) - 4, ".png")) {
+		if (file.isDir || strlen(file.name) < 4 || strcmp(file.name + strlen(file.name) - 4, ".png")) {
 			continue;
 		}
 		count += 1;
@@ -434,6 +490,9 @@ int main(int argc, char **argv) {
 
 		
 		totals.px += res.px;
+		totals.spng.encode_time += res.spng.encode_time;
+		totals.spng.decode_time += res.spng.decode_time;
+		totals.spng.size += res.spng.size;
 		totals.stbi.encode_time += res.stbi.encode_time;
 		totals.stbi.decode_time += res.stbi.decode_time;
 		totals.stbi.size += res.stbi.size;
@@ -444,6 +503,9 @@ int main(int argc, char **argv) {
 
 	if (!count) { ERROR_EXIT("No PNG files in this directory"); }
 	totals.px /= count;
+	totals.spng.encode_time /= count;
+	totals.spng.decode_time /= count;
+	totals.spng.size /= count;
 	totals.stbi.encode_time /= count;
 	totals.stbi.decode_time /= count;
 	totals.stbi.size /= count;
