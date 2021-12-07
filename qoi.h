@@ -363,7 +363,7 @@ void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
 		QOI_HEADER_SIZE + QOI_PADDING;
 
 	int p = 0;
-	unsigned char *bytes = QOI_MALLOC(max_size);
+	unsigned char *bytes = (unsigned char *) QOI_MALLOC(max_size);
 	if (!bytes) {
 		return NULL;
 	}
@@ -511,7 +511,7 @@ void *qoi_decode(const void *data, int size, qoi_desc *desc, int channels) {
 	}
 
 	int px_len = desc->width * desc->height * channels;
-	unsigned char *pixels = QOI_MALLOC(px_len);
+	unsigned char *pixels = (unsigned char *) QOI_MALLOC(px_len);
 	if (!pixels) {
 		return NULL;
 	}

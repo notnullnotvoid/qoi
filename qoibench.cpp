@@ -1,17 +1,15 @@
 /*
 
-Simple benchmark suite for png, stbi and qoi
+Simple benchmark suite for spng, stbi and qoi
 
-Requires libpng, "stb_image.h" and "stb_image_write.h"
-Compile with: 
-	gcc qoibench.c -std=gnu99 -lpng -O3 -o qoibench 
+Requires spng.c/.h, stb_image.h and stb_image_write.h
 
 Dominic Szablewski - https://phoboslab.org
 
 
 -- LICENSE: The MIT License(MIT)
 
-Copyright(c) 2021 Dominic Szablewski
+Copyright(c) 2021 Dominic Szablewski, Miles Fogle
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files(the "Software"), to deal in
@@ -32,8 +30,6 @@ SOFTWARE.
 */
 
 #include <stdio.h>
-#include <dirent.h>
-#include <png.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -108,162 +104,7 @@ static uint64_t ns() {
 
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)
-#define ERROR(...) printf("abort at line " TOSTRING(__LINE__) ": " __VA_ARGS__); printf("\n"); exit(1)
-
-
-// -----------------------------------------------------------------------------
-// libpng encode/decode wrappers
-// Seriously, who thought this was a good abstraction for an API to read/write
-// images?
-
-typedef struct {
-	int size;
-	int capacity;
-	unsigned char *data;
-} libpng_write_t;
-
-void libpng_encode_callback(png_structp png_ptr, png_bytep data, png_size_t length) {
-	libpng_write_t *write_data = (libpng_write_t*)png_get_io_ptr(png_ptr);
-	if (write_data->size + length >= write_data->capacity) {
-		ERROR("PNG write");
-	}
-	memcpy(write_data->data + write_data->size, data, length);
-	write_data->size += length;
-}
-
-void *libpng_encode(void *pixels, int w, int h, int *out_len) {
-	png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-	if (!png) {
-		ERROR("png_create_write_struct");
-	}
-
-	png_infop info = png_create_info_struct(png);
-	if (!info) {
-		ERROR("png_create_info_struct");
-	}
-
-	if (setjmp(png_jmpbuf(png))) {
-		ERROR("png_jmpbuf");
-	}
-
-	// Output is 8bit depth, RGBA format.
-	png_set_IHDR(
-		png,
-		info,
-		w, h,
-		8,
-		PNG_COLOR_TYPE_RGBA,
-		PNG_INTERLACE_NONE,
-		PNG_COMPRESSION_TYPE_DEFAULT,
-		PNG_FILTER_TYPE_DEFAULT
-	);
-
-	png_bytep row_pointers[h];
-	for(int y = 0; y < h; y++){
-		row_pointers[y] = ((unsigned char *)pixels + y * w * 4);
-	}
-
-	libpng_write_t write_data = {
-		.size = 0,
-		.capacity = w * h * 4,
-		.data = malloc(w * h * 4)
-	};
-
-	png_set_rows(png, info, row_pointers);
-	png_set_write_fn(png, &write_data, libpng_encode_callback, NULL);
-	png_write_png(png, info, PNG_TRANSFORM_IDENTITY, NULL);
-
-	png_destroy_write_struct(&png, &info);
-
-	*out_len = write_data.size;
-	return write_data.data;
-}
-
-
-typedef struct {
-	int pos;
-	int size;
-	unsigned char *data;
-} libpng_read_t;
-
-void png_decode_callback(png_structp png, png_bytep data, png_size_t length) {
-	libpng_read_t *read_data = (libpng_read_t*)png_get_io_ptr(png);
-	if (read_data->pos + length > read_data->size) {
-		ERROR("PNG read %d bytes at pos %d (size: %d)", length, read_data->pos, read_data->size);
-	}
-	memcpy(data, read_data->data + read_data->pos, length);
-	read_data->pos += length;
-}
-
-void *libpng_decode(void *data, int size, int *out_w, int *out_h) {	
-	png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-	if (!png) {
-		ERROR("png_create_read_struct");
-	}
-
-	png_infop info = png_create_info_struct(png);
-	if (!info) {
-		ERROR("png_create_info_struct");
-	}
-
-	libpng_read_t read_data = {
-		.pos = 0,
-		.size = size,
-		.data = data
-	};
-	
-	png_set_read_fn(png, &read_data, png_decode_callback);
-	png_set_sig_bytes(png, 0);
-	png_read_info(png, info);
-	
-	png_uint_32 w, h;
-	int bitDepth, colorType, interlaceType;
-	png_get_IHDR(png, info, &w, &h, &bitDepth, &colorType, &interlaceType, NULL, NULL);
-	
-	// 16 bit -> 8 bit
-	png_set_strip_16(png);
-	
-	// 1, 2, 4 bit -> 8 bit
-	if (bitDepth < 8) {
-		png_set_packing(png);
-	}
-
-	if (colorType & PNG_COLOR_MASK_PALETTE) {
-		png_set_expand(png);
-	}
-	
-	if (!(colorType & PNG_COLOR_MASK_COLOR)) {
-		png_set_gray_to_rgb(png);
-	}
-
-	// set paletted or RGB images with transparency to full alpha so we get RGBA
-	if (png_get_valid(png, info, PNG_INFO_tRNS)) {
-		png_set_tRNS_to_alpha(png);
-	}
-	
-	// make sure every pixel has an alpha value
-	if (!(colorType & PNG_COLOR_MASK_ALPHA)) {
-		png_set_filler(png, 255, PNG_FILLER_AFTER);
-	}
-	
-	png_read_update_info(png, info);
-
-	unsigned char* out = malloc(w * h * 4);
-	*out_w = w;
-	*out_h = h;
-	
-	// png_uint_32 rowBytes = png_get_rowbytes(png, info);
-	png_bytep row_pointers[h];
-	for (png_uint_32 row = 0; row < h; row++ ) {
-		row_pointers[row] = (png_bytep)(out + (row * w * 4));
-	}
-	
-	png_read_image(png, row_pointers);
-	png_read_end(png, info);
-	png_destroy_read_struct( &png, &info, NULL);
-	
-	return out;
-}
+#define ERROR_EXIT(...) printf("abort at line " TOSTRING(__LINE__) ": " __VA_ARGS__); printf("\n"); exit(1)
 
 
 // -----------------------------------------------------------------------------
@@ -283,7 +124,7 @@ void stbi_write_callback(void *context, void *data, int size) {
 void *fload(const char *path, int *out_size) {
 	FILE *fh = fopen(path, "rb");
 	if (!fh) {
-		ERROR("Can't open file");
+		ERROR_EXIT("Can't open file");
 	}
 
 	fseek(fh, 0, SEEK_END);
@@ -292,11 +133,11 @@ void *fload(const char *path, int *out_size) {
 
 	void *buffer = malloc(size);
 	if (!buffer) {
-		ERROR("Malloc for %d bytes failed", size);
+		ERROR_EXIT("Malloc for %d bytes failed", size);
 	}
 
 	if (!fread(buffer, size, 1, fh)) {
-		ERROR("Can't read file %s", path);
+		ERROR_EXIT("Can't read file %s", path);
 	}
 	fclose(fh);
 
@@ -304,6 +145,131 @@ void *fload(const char *path, int *out_size) {
 	return buffer;
 }
 
+
+// -----------------------------------------------------------------------------
+// cross-platform directory walking
+
+#include "list.hpp"
+#include <algorithm> //std::sort
+#include <stdarg.h> //va_list etc.
+#include <stdio.h> //vsnprintf
+#include <string.h> //strncpy, strlen
+#include <stdlib.h> //malloc
+
+static inline int case_insensitive_ascii_compare(const char * a, const char * b) {
+    for (int i = 0; a[i] || b[i]; ++i) {
+        if (tolower(a[i]) != tolower(b[i])) {
+            return tolower(a[i]) - tolower(b[i]);
+        }
+    }
+    return 0;
+}
+
+static inline char * dup(const char * src, int len) {
+    char * ret = (char *) malloc(len + 1);
+    strncpy(ret, src, len);
+    ret[len] = '\0';
+    return ret;
+}
+
+static inline char * dup(const char * src) {
+    if (!src) return nullptr;
+    return dup(src, strlen(src));
+}
+
+//allocates a buffer large enough to fit resulting string, and `sprintf`s to it
+__attribute__((format(printf, 2, 3)))
+static inline char * dsprintf(char * buf, const char * fmt, ...) {
+    size_t len = buf? strlen(buf) : 0;
+    va_list args1, args2;
+    va_start(args1, fmt);
+    va_copy(args2, args1);
+    buf = (char *) realloc(buf, len + vsnprintf(nullptr, 0, fmt, args1) + 1);
+    vsprintf(buf + len, fmt, args2);
+    va_end(args1);
+    va_end(args2);
+    return buf;
+}
+
+struct DirEnt {
+	char * name;
+	bool isDir;
+	List<DirEnt> children; //only for directories
+};
+
+static inline bool operator<(DirEnt l, DirEnt r) {
+    if (l.isDir && !r.isDir) return true;
+    if (!l.isDir && r.isDir) return false;
+    return case_insensitive_ascii_compare(l.name, r.name) < 0;
+}
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
+List<DirEnt> fetch_dir_info_recursive(const char * dirpath) {
+    char * wildcard = dsprintf(nullptr, "%s/*", dirpath);
+    WIN32_FIND_DATAA findData = {};
+    HANDLE handle = FindFirstFileA(wildcard, &findData);
+    free(wildcard);
+
+    if (handle == INVALID_HANDLE_VALUE) {
+        int err = GetLastError();
+        assert(err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND);
+        return {};
+    }
+
+    List<DirEnt> dir = {};
+    do {
+        if (strcmp(findData.cFileName, ".") && strcmp(findData.cFileName, "..")) {
+            if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                char * subdirpath = dsprintf(nullptr, "%s/%s", dirpath, findData.cFileName);
+                dir.add({ dup(findData.cFileName), true, fetch_dir_info_recursive(subdirpath) });
+                free(subdirpath);
+            } else {
+                dir.add({ dup(findData.cFileName), false });
+            }
+        }
+    } while (FindNextFileA(handle, &findData));
+    assert(GetLastError() == ERROR_NO_MORE_FILES);
+    assert(FindClose(handle));
+
+    //sort entries alphabetically
+    std::sort(dir.begin(), dir.end());
+    return dir;
+}
+
+#else
+#include <dirent.h>
+
+List<DirEnt> fetch_dir_info_recursive(const char * dirpath) {
+    //open directory
+    DIR * dp = opendir(dirpath);
+    assert(dp);
+
+    List<DirEnt> dir = {};
+    dirent * ep = readdir(dp);
+    while (ep) {
+        if (strcmp(ep->d_name, ".") && strcmp(ep->d_name, "..") && strcmp(ep->d_name, ".DS_Store")) {
+            if (ep->d_type == DT_DIR) {
+                char * subdirpath = dsprintf(nullptr, "%s/%s", dirpath, ep->d_name);
+                dir.add({ dup(ep->d_name), true, fetch_dir_info_recursive(subdirpath) });
+                free(subdirpath);
+            } else if (ep->d_type == DT_REG) {
+                dir.add({ dup(ep->d_name), false });
+            }
+        }
+        ep = readdir(dp);
+    }
+    closedir(dp);
+
+    //sort entries alphabetically
+    std::sort(dir.begin(), dir.end());
+    return dir;
+}
+
+#endif
 
 // -----------------------------------------------------------------------------
 // benchmark runner
@@ -318,7 +284,6 @@ typedef struct {
 	uint64_t px;
 	int w;
 	int h;
-	benchmark_lib_result_t libpng;
 	benchmark_lib_result_t stbi;
 	benchmark_lib_result_t qoi;
 } benchmark_result_t;
@@ -350,15 +315,16 @@ benchmark_result_t benchmark_image(const char *path, int runs) {
 	// Load the encoded PNG, encoded QOI and raw pixels into memory
 	void *pixels = (void *)stbi_load(path, &w, &h, NULL, 4);
 	void *encoded_png = fload(path, &encoded_png_size);
-	void *encoded_qoi = qoi_encode(pixels, &(qoi_desc){
-			.width = w,
-			.height = h, 
-			.channels = 4,
-			.colorspace = QOI_SRGB
-		}, &encoded_qoi_size);
+	qoi_desc qoiDesc = {
+		.width = (unsigned) w,
+		.height = (unsigned) h,
+		.channels = 4,
+		.colorspace = QOI_SRGB
+	};
+	void *encoded_qoi = qoi_encode(pixels, &qoiDesc, &encoded_qoi_size);
 
 	if (!pixels || !encoded_qoi || !encoded_png) {
-		ERROR("Error decoding %s\n", path);
+		ERROR_EXIT("Error decoding %s\n", path);
 	}
 
 	benchmark_result_t res = {0};
@@ -369,15 +335,9 @@ benchmark_result_t benchmark_image(const char *path, int runs) {
 
 	// Decoding
 
-	BENCHMARK_FN(runs, res.libpng.decode_time, {
-		int dec_w, dec_h;
-		void *dec_p = libpng_decode(encoded_png, encoded_png_size, &dec_w, &dec_h);
-		free(dec_p);
-	});
-
 	BENCHMARK_FN(runs, res.stbi.decode_time, {
 		int dec_w, dec_h, dec_channels;
-		void *dec_p = stbi_load_from_memory(encoded_png, encoded_png_size, &dec_w, &dec_h, &dec_channels, 4);
+		void *dec_p = stbi_load_from_memory((unsigned char *) encoded_png, encoded_png_size, &dec_w, &dec_h, &dec_channels, 4);
 		free(dec_p);
 	});
 
@@ -390,13 +350,6 @@ benchmark_result_t benchmark_image(const char *path, int runs) {
 
 	// Encoding
 
-	BENCHMARK_FN(runs, res.libpng.encode_time, {
-		int enc_size;
-		void *enc_p = libpng_encode(pixels, w, h, &enc_size);
-		res.libpng.size = enc_size;
-		free(enc_p);
-	});
-
 	BENCHMARK_FN(runs, res.stbi.encode_time, {
 		int enc_size = 0;
 		stbi_write_png_to_func(stbi_write_callback, &enc_size, w, h, 4, pixels, 0);
@@ -405,12 +358,13 @@ benchmark_result_t benchmark_image(const char *path, int runs) {
 
 	BENCHMARK_FN(runs, res.qoi.encode_time, {
 		int enc_size;
-		void *enc_p = qoi_encode(pixels, &(qoi_desc){
-			.width = w,
-			.height = h, 
+		qoi_desc qoiDesc = {
+			.width = (unsigned) w,
+			.height = (unsigned) h,
 			.channels = 4,
 			.colorspace = QOI_SRGB
-		}, &enc_size);
+		};
+		void *enc_p = qoi_encode(pixels, &qoiDesc, &enc_size);
 		res.qoi.size = enc_size;
 		free(enc_p);
 	});
@@ -427,15 +381,7 @@ void benchmark_print_result(const char *head, benchmark_result_t res) {
 	printf("## %s size: %dx%d\n", head, res.w, res.h);
 	printf("        decode ms   encode ms   decode mpps   encode mpps   size kb\n");
 	printf(
-		"libpng:  %8.1f    %8.1f      %8.2f      %8.2f  %8d\n", 
-		(double)res.libpng.decode_time/1000000.0, 
-		(double)res.libpng.encode_time/1000000.0, 
-		(res.libpng.decode_time > 0 ? px / ((double)res.libpng.decode_time/1000.0) : 0),
-		(res.libpng.encode_time > 0 ? px / ((double)res.libpng.encode_time/1000.0) : 0),
-		res.libpng.size/1024
-	);
-	printf(
-		"stbi:    %8.1f    %8.1f      %8.2f      %8.2f  %8d\n", 
+		"stbi:    %8.1f    %8.1f      %8.2f      %8.2f  %8llu\n",
 		(double)res.stbi.decode_time/1000000.0,
 		(double)res.stbi.encode_time/1000000.0,
 		(res.stbi.decode_time > 0 ? px / ((double)res.stbi.decode_time/1000.0) : 0),
@@ -443,7 +389,7 @@ void benchmark_print_result(const char *head, benchmark_result_t res) {
 		res.stbi.size/1024
 	);
 	printf(
-		"qoi:     %8.1f    %8.1f      %8.2f      %8.2f  %8d\n", 
+		"qoi:     %8.1f    %8.1f      %8.2f      %8.2f  %8llu\n",
 		(double)res.qoi.decode_time/1000000.0,
 		(double)res.qoi.encode_time/1000000.0,
 		(res.qoi.decode_time > 0 ? px / ((double)res.qoi.decode_time/1000.0) : 0),
@@ -451,6 +397,7 @@ void benchmark_print_result(const char *head, benchmark_result_t res) {
 		res.qoi.size/1024
 	);
 	printf("\n");
+	fflush(stdout);
 }
 
 int main(int argc, char **argv) {
@@ -466,26 +413,19 @@ int main(int argc, char **argv) {
 	benchmark_result_t totals = {0};
 
 	int runs = atoi(argv[1]);
-	DIR *dir = opendir(argv[2]);
-	if (runs <=0) {
-		runs = 1;
-	}
+	if (runs <= 0) runs = 1;
+	List<DirEnt> files = fetch_dir_info_recursive(argv[2]);
 
-	if (!dir) {
-		ERROR("Couldn't open directory %s", argv[2]);
-	}
-
-	printf("## Benchmarking %s/*.png -- %d runs\n\n", argv[2], runs);
-	struct dirent *file;
+	printf("## Benchmarking %s/*.png -- %d runs\n\n", argv[2], runs); fflush(stdout);
 	int count = 0;
-	for (int i = 0; dir && (file = readdir(dir)) != NULL; i++) {
-		if (strcmp(file->d_name + strlen(file->d_name) - 4, ".png") != 0) {
+	for (DirEnt & file : files) {
+		if (strlen(file.name) < 4 || strcmp(file.name + strlen(file.name) - 4, ".png")) {
 			continue;
 		}
-		count++;
+		count += 1;
 
-		char *file_path = malloc(strlen(file->d_name) + strlen(argv[2])+8);
-		sprintf(file_path, "%s/%s", argv[2], file->d_name);
+		char *file_path = (char *) malloc(strlen(file.name) + strlen(argv[2]) + 8);
+		sprintf(file_path, "%s/%s", argv[2], file.name);
 		
 		benchmark_result_t res = benchmark_image(file_path, runs);
 		benchmark_print_result(file_path, res);
@@ -494,9 +434,6 @@ int main(int argc, char **argv) {
 
 		
 		totals.px += res.px;
-		totals.libpng.encode_time += res.libpng.encode_time;
-		totals.libpng.decode_time += res.libpng.decode_time;
-		totals.libpng.size += res.libpng.size;
 		totals.stbi.encode_time += res.stbi.encode_time;
 		totals.stbi.decode_time += res.stbi.decode_time;
 		totals.stbi.size += res.stbi.size;
@@ -504,12 +441,9 @@ int main(int argc, char **argv) {
 		totals.qoi.decode_time += res.qoi.decode_time;
 		totals.qoi.size += res.qoi.size;
 	}
-	closedir(dir);
 
+	if (!count) { ERROR_EXIT("No PNG files in this directory"); }
 	totals.px /= count;
-	totals.libpng.encode_time /= count;
-	totals.libpng.decode_time /= count;
-	totals.libpng.size /= count;
 	totals.stbi.encode_time /= count;
 	totals.stbi.decode_time /= count;
 	totals.stbi.size /= count;
