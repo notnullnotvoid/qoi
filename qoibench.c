@@ -323,12 +323,13 @@ void * spng_decode(void * input, size_t inputSize) {
 	return output;
 }
 
-void * spng_encode(void * input, size_t width, size_t height, size_t * outputSize) {
+void * spng_encode(void * input, size_t width, size_t height, int channels, size_t * outputSize) {
 	spng_ctx * ctx = spng_ctx_new(SPNG_CTX_ENCODER);
 	spng_set_option(ctx, SPNG_ENCODE_TO_BUFFER, 1);
-	spng_ihdr ihdr = { (unsigned) width, (unsigned) height, 8, 6, 0, 0, 0 };
+	int colorType = channels == 4? 6 : 2;
+	spng_ihdr ihdr = { (unsigned) width, (unsigned) height, 8, (unsigned char) colorType, 0, 0, 0 };
 	spng_set_ihdr(ctx, &ihdr);
-	spng_encode_image(ctx, input, width * height * 4, SPNG_FMT_PNG, SPNG_ENCODE_FINALIZE);
+	spng_encode_image(ctx, input, width * height * channels, SPNG_FMT_PNG, SPNG_ENCODE_FINALIZE);
 	int error = 0;
 	void * output = spng_get_png_buffer(ctx, outputSize, &error);
 	spng_ctx_free(ctx);
@@ -514,7 +515,7 @@ void benchmark_print_result(benchmark_result_t res) {
 	res.disk_size /= res.count;
 	res.raw_size /= res.count;
 
-	printf("        decode ms   encode ms   decode mpps   encode mpps   size kb   vs rgba   vs raw   vs best\n");
+	printf("        decode ms   encode ms   decode mpps   encode mpps   size kb   vs rgba   vs raw   vs disk\n");
 	if (!opt_nopng) {
 	#ifndef _WIN32
 		benchmark_print_lib("lpng", res, res.libpng);
@@ -635,7 +636,7 @@ benchmark_result_t benchmark_image(const char *path) {
 
 			BENCHMARK_FN(opt_nowarmup, opt_runs, res.spng.encode_time, {
 				size_t enc_size = 0;
-				void *enc_p = spng_encode(pixels, w, h, &enc_size);
+				void *enc_p = spng_encode(pixels, w, h, channels, &enc_size);
 				res.spng.size = enc_size;
 				free(enc_p);
 			});
@@ -701,7 +702,7 @@ void benchmark_directory(const char *path, List<DirEnt> files, benchmark_result_
 		benchmark_result_t res = benchmark_image(file_path);
 
 		if (!opt_onlytotals) {
-			printf("## %s size: %dx%d (%llu kb)\n", file_path, res.w, res.h, res.disk_size);
+			printf("## %s size: %dx%d (%llu kb)\n", file_path, res.w, res.h, res.disk_size / 1024);
 			benchmark_print_result(res);
 		}
 
