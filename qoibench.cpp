@@ -151,17 +151,6 @@ void *fload(const char *path, int *out_size) {
 // -----------------------------------------------------------------------------
 // spng wrapper (because fuck trying to build libpng on windows)
 
-// struct spng_ihdr
-// {
-//     uint32_t width;
-//     uint32_t height;
-//     uint8_t bit_depth;
-//     uint8_t color_type;
-//     uint8_t compression_method;
-//     uint8_t filter_method;
-//     uint8_t interlace_method;
-// };
-
 void * spng_decode(void * input, size_t inputSize) {
 	spng_ctx * ctx = spng_ctx_new(0);
 	spng_set_png_buffer(ctx, input, inputSize);
@@ -170,13 +159,6 @@ void * spng_decode(void * input, size_t inputSize) {
 	spng_decoded_image_size(ctx, SPNG_FMT_RGBA8, &outputSize);
 	void * output = malloc(outputSize);
 	spng_decode_image(ctx, output, outputSize, SPNG_FMT_RGBA8, 0);
-
-	//debug only
-	// spng_ihdr ihdr = {};
-	// spng_get_ihdr(ctx, &ihdr);
-	// printf("ihdr: width %d, height %d, bit_depth %d, color_type %d, compression_method %d, filter_method %d, interlace_method %d\n",
-	// 	(int) ihdr.width, (int) ihdr.height, (int) ihdr.bit_depth, (int) ihdr.color_type, (int) ihdr.compression_method, (int) ihdr.filter_method, (int) ihdr.interlace_method);
-
 	spng_ctx_free(ctx);
 	return output;
 }
@@ -329,6 +311,7 @@ typedef struct {
 } benchmark_lib_result_t;
 
 typedef struct {
+	uint64_t sizeOnDisk;
 	uint64_t px;
 	int w;
 	int h;
@@ -377,6 +360,7 @@ benchmark_result_t benchmark_image(const char *path, int runs) {
 	}
 
 	benchmark_result_t res = {0};
+	res.sizeOnDisk = encoded_png_size;
 	res.px = w * h;
 	res.w = w;
 	res.h = h;
@@ -437,21 +421,21 @@ benchmark_result_t benchmark_image(const char *path, int runs) {
 	return res;
 }
 
-void benchmark_print_lib(const char * name, benchmark_lib_result_t res, double px) {
-	printf("%-5s    %8.1f    %8.1f      %8.2f      %8.2f  %8llu\n", name,
-		   (double) res.decode_time / 1000000.0,
-		   (double) res.encode_time / 1000000.0,
-		   res.decode_time > 0 ? px / ((double) res.decode_time / 1000.0) : 0,
-		   res.encode_time > 0 ? px / ((double) res.encode_time / 1000.0) : 0,
-		   res.size / 1024);
+void benchmark_print_lib(const char * name, benchmark_lib_result_t res, double px, double sizeOnDisk) {
+	printf("%-5s    %8.1f    %8.1f      %8.2f      %8.2f  %8llu %8.3f  %8.2f\n", name,
+		   res.decode_time / 1000000.0,
+		   res.encode_time / 1000000.0,
+		   res.decode_time > 0 ? px / (res.decode_time / 1000.0) : 0,
+		   res.encode_time > 0 ? px / (res.encode_time / 1000.0) : 0,
+		   res.size / 1024, res.size / (px * 4), res.size / sizeOnDisk);
 }
 
 void benchmark_print_result(const char *head, benchmark_result_t res) {
-	printf("## %s size: %dx%d\n", head, res.w, res.h);
-	printf("        decode ms   encode ms   decode mpps   encode mpps   size kb\n");
-	benchmark_print_lib("spng", res.spng, res.px);
-	benchmark_print_lib("stbi", res.stbi, res.px);
-	benchmark_print_lib("qoi", res.qoi, res.px);
+	printf("## %s size: %dx%d (%llu kb)\n", head, res.w, res.h, res.sizeOnDisk / 1024);
+	printf("        decode ms   encode ms   decode mpps   encode mpps   size kb   vs raw   vs best\n");
+	benchmark_print_lib("spng", res.spng, res.px, res.sizeOnDisk);
+	benchmark_print_lib("stbi", res.stbi, res.px, res.sizeOnDisk);
+	benchmark_print_lib("qoi", res.qoi, res.px, res.sizeOnDisk);
 	printf("\n");
 	fflush(stdout);
 }
@@ -488,7 +472,7 @@ int main(int argc, char **argv) {
 
 		free(file_path);
 
-		
+		totals.sizeOnDisk += res.sizeOnDisk;
 		totals.px += res.px;
 		totals.spng.encode_time += res.spng.encode_time;
 		totals.spng.decode_time += res.spng.decode_time;
@@ -502,6 +486,7 @@ int main(int argc, char **argv) {
 	}
 
 	if (!count) { ERROR_EXIT("No PNG files in this directory"); }
+	totals.sizeOnDisk /= count;
 	totals.px /= count;
 	totals.spng.encode_time /= count;
 	totals.spng.decode_time /= count;
