@@ -11,10 +11,8 @@ More info at https://phoboslab.org/log/2021/11/qoi-fast-lossless-image-compressi
 
 ⚠️ 2021.11.30 – the file format is not yet finalized. We're still working to fix
 some smaller issues. The final specification will be announced on 2021.12.20.
-Thanks for your patience! https://github.com/phoboslab/qoi/issues/48
-
-These specification changes are ~~not yet reflected in the code here~~ 
-reflected in qoi.h now. 
+Thanks for your patience! The WIP file format specification can be found in
+[qoi.h](https://github.com/phoboslab/qoi/blob/master/qoi.h)
 
 
 ## Why?
@@ -45,8 +43,13 @@ a simple wrapper to benchmark stbi, libpng and qoi
 - https://github.com/zakarumych/rapid-qoi (Rust)
 - https://github.com/xfmoulet/qoi (Go)
 - https://github.com/panzi/jsqoi (TypeScript)
+- https://github.com/0xd34df00d/hsqoi (Haskell)
 - https://github.com/pfusik/qoi-ci (Ć)
 - https://github.com/kodonnell/qoi (Python)
+- https://github.com/NUlliiON/QoiSharp (C#)
+- https://github.com/rbino/qoix (Elixir)
+- https://github.com/elihwyma/Swift-QOI (Swift)
+- https://github.com/saharNooby/qoi-java (Java)
 
 
 ## Packages
