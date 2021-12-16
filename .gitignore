@@ -1,6 +1,9 @@
 images/
 images-small/
 images-large/
+images-lance/
+images-lance-small/
+images-lance-large/
 *.exe
 *.lib
 stb_image.h
