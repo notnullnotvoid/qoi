@@ -335,6 +335,8 @@ Implementation */
 #define QOI_OP_DIFF   0x40 /* 01xxxxxx */
 #define QOI_OP_LUMA   0x80 /* 10xxxxxx */
 #define QOI_OP_RUN    0xc0 /* 11xxxxxx */
+#define QOI_OP_DIFF2  0xfc /* 11111100 */
+#define QOI_OP_DIFF4  0xfd /* 11111101 */
 #define QOI_OP_RGB    0xfe /* 11111110 */
 #define QOI_OP_RGBA   0xff /* 11111111 */
 
@@ -436,7 +438,7 @@ void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
 
 		if (px.v == px_prev.v) {
 			run++;
-			if (run == 62 || px_pos == px_end) {
+			if (run == 60 || px_pos == px_end) {
 				bytes[p++] = QOI_OP_RUN | (run - 1);
 				run = 0;
 			}
@@ -488,11 +490,37 @@ void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
 					}
 				}
 				else {
-					bytes[p++] = QOI_OP_RGBA;
-					bytes[p++] = px.rgba.r;
-					bytes[p++] = px.rgba.g;
-					bytes[p++] = px.rgba.b;
-					bytes[p++] = px.rgba.a;
+					signed char vr = px.rgba.r - px_prev.rgba.r;
+					signed char vg = px.rgba.g - px_prev.rgba.g;
+					signed char vb = px.rgba.b - px_prev.rgba.b;
+					signed char va = px.rgba.a - px_prev.rgba.a;
+
+					if (
+						vr > -3 && vr < 2 &&
+						vg > -3 && vg < 2 &&
+						vb > -3 && vb < 2 &&
+						va > -3 && va < 2
+					) {
+						bytes[p++] = QOI_OP_DIFF2;
+						bytes[p++] = (va + 2) << 6 | (vr + 2) << 4 | (vg + 2) << 2 | (vb + 2);
+					}
+					else if (
+						vr > -9 && vr < 8 &&
+						vg > -9 && vg < 8 &&
+						vb > -9 && vb < 8 &&
+						va > -9 && va < 8
+					) {
+						bytes[p++] = QOI_OP_DIFF4;
+						bytes[p++] = (va + 8) << 4 | (vr + 8);
+						bytes[p++] = (vg + 8) << 4 | (vb + 8);
+					}
+					else {
+						bytes[p++] = QOI_OP_RGBA;
+						bytes[p++] = px.rgba.r;
+						bytes[p++] = px.rgba.g;
+						bytes[p++] = px.rgba.b;
+						bytes[p++] = px.rgba.a;
+					}
 				}
 			}
 		}
@@ -566,7 +594,22 @@ void *qoi_decode(const void *data, int size, qoi_desc *desc, int channels) {
 		else if (p < chunks_len) {
 			int b1 = bytes[p++];
 
-			if (b1 == QOI_OP_RGB) {
+			if (b1 == QOI_OP_DIFF2) {
+				int b2 = bytes[p++];
+				px.rgba.a += ((b2 >> 6) & 0x03) - 2;
+				px.rgba.r += ((b2 >> 4) & 0x03) - 2;
+				px.rgba.g += ((b2 >> 2) & 0x03) - 2;
+				px.rgba.b += ( b2       & 0x03) - 2;
+			}
+			else if (b1 == QOI_OP_DIFF4) {
+				int b2 = bytes[p++];
+				int b3 = bytes[p++];
+				px.rgba.a += ((b2 >> 4) & 0x0F) - 8;
+				px.rgba.r += ( b2       & 0x0F) - 8;
+				px.rgba.g += ((b3 >> 4) & 0x0F) - 8;
+				px.rgba.b += ( b3       & 0x0F) - 8;
+			}
+			else if (b1 == QOI_OP_RGB) {
 				px.rgba.r = bytes[p++];
 				px.rgba.g = bytes[p++];
 				px.rgba.b = bytes[p++];

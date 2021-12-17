@@ -579,6 +579,19 @@ benchmark_result_t benchmark_image(const char *path) {
 		qoi_desc dc;
 		void *pixels_qoi = qoi_decode(encoded_qoi, encoded_qoi_size, &dc, channels);
 		if (memcmp(pixels, pixels_qoi, w * h * channels) != 0) {
+			unsigned char * p1 = (unsigned char *) pixels;
+			unsigned char * p2 = (unsigned char *) pixels_qoi;
+			for (int i = 0; i < w * h; ++i) {
+				int k = i * channels;
+				if (p1[k + 0] != p2[k + 0] || p1[k + 1] != p2[k + 1] || p1[k + 2] != p2[k + 2]) {
+					printf("pixel %d mismatch: %d.%d.%d(%d) -> %d.%d.%d(%d) [%d]\n", i,
+						p1[k + 0], p1[k + 1], p1[k + 2], p1[k + 3],
+						p2[k + 0], p2[k + 1], p2[k + 2], p2[k + 3],
+						channels);
+					break;
+				}
+
+			}
 			ERROR_EXIT("QOI roundtrip pixel missmatch for %s", path);
 		}
 		free(pixels_qoi);
