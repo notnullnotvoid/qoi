@@ -373,6 +373,8 @@ unsigned int qoi_read_32(const unsigned char *bytes, int *p) {
 	return a << 24 | b << 16 | c << 8 | d;
 }
 
+#include <immintrin.h>
+
 void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
 	int i, max_size, p, run;
 	int px_len, px_end, px_pos, channels;
@@ -450,12 +452,82 @@ void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
 				run = 0;
 			}
 
+#ifdef __AVX2__
+			{
+				int mask;
+				__m256i comp_px;
+				__m256i comp_index;
+				__m256 res;
+				comp_px = _mm256_set1_epi32 (px.v);
+				for (index_pos = 0; index_pos < 64; index_pos += 8) {
+					comp_index = _mm256_loadu_si256((__m256i*)(index + index_pos));
+					comp_index = _mm256_cmpeq_epi32 (comp_px, comp_index);
+					res = _mm256_castsi256_ps (comp_index);
+					mask = _mm256_movemask_ps (res);
+					if (mask) {/* match found, and as values are unique it's the only match */
+						index_pos += __builtin_ctz(mask);
+						bytes[p++] = QOI_OP_INDEX | index_pos;
+						break;
+					}
+				}
+			}
+#elif 0
+			// {
+			// 	int mask;
+			// 	__m128i comp_px;
+			// 	__m128i comp_index;
+			// 	__m128 res;
+			// 	comp_px = _mm_set1_epi32 (px.v);
+			// 	for (index_pos = 0; index_pos < 64; index_pos += 4) {
+			// 		comp_index = _mm_loadu_si128((__m128i*)(index + index_pos));
+			// 		comp_index = _mm_cmpeq_epi32 (comp_px, comp_index);
+			// 		res = _mm_castsi128_ps (comp_index);
+			// 		mask = _mm_movemask_ps (res);
+			// 		if (mask) {/* match found, and as values are unique it's the only match */
+			// 			index_pos += __builtin_ctz(mask);
+			// 			bytes[p++] = QOI_OP_INDEX | index_pos;
+			// 			break;
+			// 		}
+			// 	}
+			// }
+
+			{
+				int mask;
+				__m128i comp_px;
+				__m128i comp_index;
+				__m128 res;
+				comp_px = _mm_set1_epi32 (px.v);
+				int start = index_wpos & 0b00111100;
+				int end = start - 32;
+				for (index_pos = start; index_pos > end; index_pos -= 4) {
+					int i = index_pos & 63;
+					comp_index = _mm_loadu_si128((__m128i*)(index + i));
+					comp_index = _mm_cmpeq_epi32 (comp_px, comp_index);
+					res = _mm_castsi128_ps (comp_index);
+					mask = _mm_movemask_ps (res);
+					if (mask) {/* match found, and as values are unique it's the only match */
+						i += __builtin_ctz(mask);
+						bytes[p++] = QOI_OP_INDEX | i;
+						break;
+					}
+				}
+				if (!mask) index_pos = 64; //hackhackhack
+			}
+#else
+			// for (index_pos = 63; index_pos >= 0; index_pos--) {
+			// 	if (index[index_pos].v == px.v) {
+			// 		bytes[p++] = QOI_OP_INDEX | index_pos;
+			// 		break;
+			// 	}
+			// }
 			for (index_pos = 0; index_pos < 64; index_pos++) {
-				if (index[index_pos].v == px.v) {
-					bytes[p++] = QOI_OP_INDEX | index_pos;
+				int i = (0 + index_pos) & 63;
+				if (index[i].v == px.v) {
+					bytes[p++] = QOI_OP_INDEX | i;
 					break;
 				}
 			}
+#endif
 
 			if (index_pos == 64) {
 				index[index_wpos++ & 63] = px;
@@ -509,6 +581,11 @@ void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
 	*out_len = p;
 	return bytes;
 }
+
+#include <stdint.h>
+static uint64_t index_histogram[64] = {};
+static uint64_t index_total = 0;
+static uint64_t pixel_total = 0;
 
 void *qoi_decode(const void *data, int size, qoi_desc *desc, int channels) {
 	const unsigned char *bytes;
@@ -565,6 +642,7 @@ void *qoi_decode(const void *data, int size, qoi_desc *desc, int channels) {
 
 	chunks_len = size - sizeof(qoi_padding);
 	for (px_pos = 0; px_pos < px_len; px_pos += channels) {
+		++pixel_total;
 		if (run > 0) {
 			run--;
 		}
@@ -586,6 +664,9 @@ void *qoi_decode(const void *data, int size, qoi_desc *desc, int channels) {
 			}
 			else if ((b1 & QOI_MASK_2) == QOI_OP_INDEX) {
 				px = index[b1];
+				//count
+				++index_total;
+				++index_histogram[(b1 - index_wpos) & 63];
 			}
 			else if ((b1 & QOI_MASK_2) == QOI_OP_DIFF) {
 				px.rgba.r += ((b1 >> 4) & 0x03) - 2;

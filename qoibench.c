@@ -794,5 +794,11 @@ int main(int argc, char **argv) {
 		printf("No images found in %s\n", argv[2]);
 	}
 
+	printf("\nHistogram of %llu indices (%4.2f%% of all pixels):\n",
+		index_total, (double) index_total / (double) pixel_total * 100.0);
+	for (int i = 0; i < 64; ++i) {
+		printf("%2d: %4.2f%%\n", i, (double) index_histogram[i] / (double) index_total * 100.0);
+	}
+
 	return 0;
 }
